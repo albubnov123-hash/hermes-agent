@@ -31,6 +31,10 @@ _INTERPRETER_PREFIXES = tuple({
 _normcase = os.path.normcase
 _INTERPRETER_PREFIX_STRS = tuple(_normcase(os.fspath(p)) for p in _INTERPRETER_PREFIXES)
 
+# The checkout's own sealed-payload descriptor. A source install checked out INSIDE the home
+# (install.sh's default layout) keeps it beside the tree (``<checkout>/../manifest.json``).
+_PAYLOAD_MANIFEST_PATH = _normcase(os.fspath(Path(__file__).resolve().parent.parent.parent / "manifest.json"))
+
 
 def _within(path: str, prefix: str) -> bool:
     """``Path(path).is_relative_to(prefix)`` for two normalized, case-folded absolute strings."""
@@ -44,6 +48,31 @@ def _contains(path: str, prefix: str) -> bool:
     if path == prefix:
         return True
     return prefix.startswith(path) if path == os.sep else prefix.startswith(path + os.sep)
+
+
+def _is_install_metadata(path: str, roots: tuple[str, ...]) -> bool:
+    """PM's own install/dependency state, not Hermes user state.
+
+    A source install checked out INSIDE the home (``install.sh``'s default layout,
+    ``INSTALL_DIR=$HERMES_HOME/hermes-agent``) keeps its install metadata *beside*, and its
+    dependency state *under*, the root it sits in:
+
+    * ``<checkout>/../manifest.json`` — the sealed-payload descriptor PM probes to decide
+      whether the tree ships beside a payload;
+    * ``<root>/installs/`` — the checkout's committed dependency generations and ``facts.json``;
+    * ``<root>/tools/`` — the pinned tool store (node, ripgrep, chromium, …), which the guard
+      already treats as the interpreter's own installation for the PM-managed Python.
+
+    PM resolves these on ordinary paths — dependency activation, and now every terminal PATH
+    build (``LocalEnvironment`` → ``pm.user_facing``) — and reads absence as "not a payload" /
+    "not the owner" rather than an error, so refusing the probe fails tests that never touch
+    user state. Only non-destructive access is exempt; writes are still refused, and user state
+    (``state.db``, ``config.yaml``, ``sessions/``, …) is untouched by this predicate.
+    """
+    if path == _PAYLOAD_MANIFEST_PATH:
+        return True
+    return any(_within(path, os.path.join(root, name))
+               for root in roots for name in ("installs", "tools"))
 
 
 class HomeIOGuard:
@@ -100,6 +129,11 @@ class HomeIOGuard:
             for prefix in _INTERPRETER_PREFIX_STRS:
                 if _within(absolute, prefix) or (metadata and _contains(absolute, prefix)):
                     return
+            # The checkout's payload descriptor and its dependency state sit in the home only
+            # because the checkout does; PM probes both on ordinary code paths. Only
+            # non-destructive access is exempt, so this cannot mutate install or user state.
+            if not destructive and _is_install_metadata(absolute, roots):
+                return
             # Check the lexical path first: resolving must not probe a protected
             # tree merely to decide that the original path was forbidden.
             for root in roots:
