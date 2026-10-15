@@ -134,6 +134,17 @@ def _repo_stars(repo: str, stars: dict[str, int]) -> int | None:
     return stars.get(f"{m.group(1)}/{m.group(2)}") if m else None
 
 
+def _iso_utc(stamp: str) -> str:
+    """git's strict ISO committer date with a zero offset spelled ``Z``.
+
+    ``%cI`` writes UTC as ``+00:00``; the catalog's published timestamps are ISO-8601 ``Z``
+    (``tests/website/test_extract_plugins.py`` pins it). A commit made away from UTC keeps
+    its own offset — it is the same instant, and rewriting it would move the date the
+    plugins page displays.
+    """
+    return f"{stamp[:-6]}Z" if stamp.endswith("+00:00") else stamp
+
+
 def load_git_dates(catalog_dir: Path) -> dict[str, dict[str, str]]:
     """``{"<file>.yaml": {"addedAt": iso, "updatedAt": iso}}`` from the catalog's git history.
 
@@ -179,7 +190,7 @@ def load_git_dates(catalog_dir: Path) -> dict[str, dict[str, str]]:
     when = ""
     for line in log.splitlines():
         if line.startswith("\x00"):
-            when = line[1:].strip()
+            when = _iso_utc(line[1:].strip())
             continue
         parts = line.split("\t")
         if len(parts) < 2 or not when:
